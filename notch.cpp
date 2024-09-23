@@ -1,4 +1,5 @@
 ﻿#include "common.h"
+#include <filesystem>
 #include "util.h"
 #define STB_IMAGE_IMPLEMENTATION    
 #include <stb_image.h>
@@ -7,18 +8,57 @@ glm::vec3 cam_front;
 glm::vec3 cam_right;
 float prevTime;
 float yaw = -90.0f, pitch = 0.0f;
+#define BLOCK_NONE 0
+#define BLOCK_DIRT 1
+#define BLOCK_STONE 2
 
-struct Program {
+#define BLOCK_SIZE 16
+GLuint model_unif;
+GLuint tex_idx_unif;
+struct Chunk {
+	uint8_t blocks[BLOCK_SIZE][BLOCK_SIZE][BLOCK_SIZE];
+	glm::vec3 chunk_position;
+	GLuint chunk_tex_id;
+	Chunk(glm::vec3 pos) {
+		chunk_position = pos;
+		for (int x = 0; x < BLOCK_SIZE; x++) {
+			for (int y = 0; y < BLOCK_SIZE; y++) {
+				for (int z = 0; z < BLOCK_SIZE; z++) {
+					blocks[x][y][z] = BLOCK_DIRT;
+				}
+			}
+		}
+		chunk_tex_id = 2;
+	}
+	void draw() {
+		for (int x = 0; x < BLOCK_SIZE; x++) {
+			for (int y = 0; y < BLOCK_SIZE; y++) {
+				for (int z = 0; z < BLOCK_SIZE; z++) {
+					if (blocks[x][y][z] != BLOCK_NONE) {
+						glm::vec3 position = glm::vec3(x, y, z) + this->chunk_position;
+						glm::mat4 model = glm::mat4(1.0f);
+						model = glm::translate(model, position);
+						glUniformMatrix4fv(model_unif, 1, GL_FALSE, glm::value_ptr(model));
+						glUniform1ui(tex_idx_unif, blocks[x][y][z]);
+						glDrawArrays(GL_TRIANGLES, 0, 36);
+					}
+				}
+			}
+		}
+	}
+};
+struct ShaderProgram {
 	GLuint id;
 	GLuint get_id() {
 		return id;
 	}
-	Program(std::string vertex_path, std::string fragment_path) {
+	ShaderProgram(std::string vertex_path, std::string fragment_path) {
 		id = glCreateProgram();
 		GLuint vertex_shader, fragment_shader;
 		
 		vertex_shader = util::loadAndCompileShader(vertex_path, GL_VERTEX_SHADER);
 		fragment_shader = util::loadAndCompileShader(fragment_path, GL_FRAGMENT_SHADER);
+
 		if (vertex_shader != NULL and fragment_shader != NULL) {
 			glAttachShader(id, vertex_shader);
 			glAttachShader(id, fragment_shader);
@@ -110,7 +150,11 @@ void framebuffer_size_callback(GLFWwindow* window, int width, int height)
 	glViewport(0, 0, width, height);
 }
 int main() {
+	std::cout << "Current path is: " << std::filesystem::current_path() << std::endl;
+
 	// start GL context and O/S window using the GLFW helper library
+	_CrtSetDbgFlag ( _CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF );
+
 	if (!glfwInit()) {
 		fprintf(stderr, "ERROR: could not start GLFW3\n");
 		return 1;
@@ -202,10 +246,10 @@ int main() {
 	// close GL context and any other GLFW resources
 
 	int width, height, nChannels;
-	uint8_t* blockTexture = stbi_load("assets/terrain.png", &width, &height, &nChannels, STBI_rgb_alpha);
+	uint8_t* blockTexture = stbi_load("../assets/terrain.png", &width, &height, &nChannels, STBI_rgb_alpha);
 	unsigned int blockTextureID;
 	if (!blockTexture) {
-		fprintf(stdout, "New File NAmw\r\n");
+		fprintf(stdout, "New File Name\r\n");
 		fprintf(stderr, "ERROR: Texture load failed\n");
 		fprintf(stderr, stbi_failure_reason());
 	}
@@ -223,7 +267,7 @@ int main() {
 	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, (void*)blockTexture);
 	stbi_image_free((void*)blockTexture);
 
-	Program program("shaders/basic.vert", "shaders/basic.frag");
+	ShaderProgram program("../shaders/basic.vert", "../shaders/basic.frag");
 	if (program.get_id() == NULL) {
 		return -1;
 	}
@@ -240,8 +284,8 @@ int main() {
 	projection = glm::perspective(glm::radians(90.0f), 480.0f / 480.f, 0.1f, 100.0f);
 	GLuint projection_unif = glGetUniformLocation(program.get_id(), "projection");
 
-	GLuint model_unif = glGetUniformLocation(program.get_id(), "model");
-	GLuint tex_idx_unif = glGetUniformLocation(program.get_id(), "tex_idx");
+	model_unif = glGetUniformLocation(program.get_id(), "model");
+	tex_idx_unif = glGetUniformLocation(program.get_id(), "tex_idx");
 
 	prevTime = glfwGetTime();
 	float prevSec = glfwGetTime();
@@ -257,6 +301,7 @@ int main() {
 	  glm::vec3(1.5f,  0.2f, -1.5f),
 	  glm::vec3(-1.3f,  1.0f, -1.5f)
 	};
+	Chunk chunk(glm::vec3(10.0, 0.0, 0.0));
 	glBindVertexArray(vao);
 	GLuint tex_idx = 0;
 	while (!glfwWindowShouldClose(window)) {
@@ -269,33 +314,25 @@ int main() {
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 		//		fprintf(stdout, "%f\n", prevTime);
 		glm::mat4 view = glm::mat4(1.0f);
-		/*
-		view = glm::translate(view, -cam_pos);
-		view = glm::rotate(view, (float) glm::radians((float)xz_angle), glm::vec3(1.0f, 0.0f, 1.0f));
-		view = glm::rotate(view, (float) glm::radians((float)yz_angle), glm::vec3(0.0f, 1.0f, 1.0f));
-		*/
-		cam_pos.y = 0.0f;
+
+//		cam_pos.y = 0.0f;
 		view = glm::lookAt(cam_pos, cam_pos + cam_front, glm::vec3(0.0f, 1.0f, 0.0f));
 		glUniformMatrix4fv(view_unif, 1, GL_FALSE, glm::value_ptr(view));
-		for (GLuint i = 0; i < 10; i++) {
-			glm::mat4 model = glm::mat4(1.0f);
-			model = glm::translate(model, cubePositions[i]);
-			model = glm::rotate(model, (float)glm::radians((glfwGetTime()) * (90.0f)), glm::vec3((1.0f + glm::sin(glm::radians(glfwGetTime() * 90.0f))), 1.0f, 0.0f));
-			glUniformMatrix4fv(model_unif, 1, GL_FALSE, glm::value_ptr(model));
-			glUniform1ui(tex_idx_unif, i + tex_idx);
-			glDrawArrays(GL_TRIANGLES, 0, 36);
-		}
+		chunk.draw();
 		if ((glfwGetTime() - prevSec) > 1.0f) {
 			prevSec = glfwGetTime();
 			tex_idx = (tex_idx == 200) ? 0 : tex_idx + 1;
 		}
 		prevTime = glfwGetTime();
-
-		// update other events like input handling 
-		glfwPollEvents();
-		// put the stuff we've been drawing onto the display
 		glfwSwapBuffers(window);
+
+		glfwPollEvents();
 	}
 	glfwTerminate();
+
+//	char* something_for_mem_leak = new char[23299];
+	_CrtSetReportMode(_CRT_WARN, _CRTDBG_MODE_DEBUG); 
+
+	_CrtDumpMemoryLeaks();
 	return 0;
 }
